@@ -4,11 +4,11 @@
 //   POST /api/rooms {name, pass} … 部屋をつくる（部屋名とパスコード）
 //   GET  /api/rooms/:id/ws?pass=&nick=  … WebSocketで部屋に入る
 //
-// 部屋は最大6人。6人そろったら全員に start を送る。
+// 部屋の人数は作る人が6〜12人で決める。その人数がそろったら全員に start を送る。
 // 試合中は「部屋を作った人（slot 0 = ホスト）」が試合を動かし、
 // サーバーはホスト⇔ほかの人のメッセージを中継するだけ。
 
-const MAX = 6;
+const MIN = 6, MAX = 12;
 
 export default {
   async fetch(req, env) {
@@ -26,15 +26,16 @@ export default {
       try { body = await req.json(); } catch (e) {}
       const name = clean(body.name, 16);
       const pass = String(body.pass || "").trim().slice(0, 16);
+      const max = Math.min(MAX, Math.max(MIN, parseInt(body.max, 10) || MIN));
       if (!name) return cors(json({ error: "部屋名を入れてください" }, 400));
       if (pass.length < 1) return cors(json({ error: "パスコードを入れてください" }, 400));
       const id = randomId();
       const room = env.ROOM.get(env.ROOM.idFromName(id));
       await room.fetch("https://room/init", {
         method: "POST",
-        body: JSON.stringify({ id, name, passHash: await sha(pass) }),
+        body: JSON.stringify({ id, name, max, passHash: await sha(pass) }),
       });
-      return cors(json({ id, name }));
+      return cors(json({ id, name, max }));
     }
 
     const m = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{8})\/ws$/);
@@ -61,7 +62,7 @@ export class Room {
     if (url.pathname === "/init") {
       const d = await req.json();
       await this.state.storage.put("meta", {
-        id: d.id, name: d.name, passHash: d.passHash, status: "waiting", created: Date.now(),
+        id: d.id, name: d.name, max: d.max || MIN, passHash: d.passHash, status: "waiting", created: Date.now(),
       });
       return new Response("ok");
     }
@@ -78,8 +79,9 @@ export class Room {
     if ((await sha(pass)) !== meta.passHash) return reject("パスコードがちがいます");
     if (meta.status !== "waiting") return reject("この部屋はもう試合を始めています");
 
+    const roomMax = meta.max || MIN;
     const members = this.members();
-    if (members.length >= MAX) return reject("この部屋は満員です");
+    if (members.length >= roomMax) return reject("この部屋は満員です");
     // ホスト（部屋を作った人）がいない部屋には入れない
     if (members.length > 0 && !members.some((x) => x.slot === 0)) return reject("この部屋は閉じています");
 
@@ -91,10 +93,10 @@ export class Room {
     const [client, server] = Object.values(pair);
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ slot, nick });
-    server.send(JSON.stringify({ t: "welcome", slot, room: meta.name, id: meta.id }));
+    server.send(JSON.stringify({ t: "welcome", slot, room: meta.name, id: meta.id, max: roomMax }));
 
     this.sendAll({ t: "members", members: this.members() });
-    if (this.members().length >= MAX) await this.start();
+    if (this.members().length >= roomMax) await this.start();
     else await this.report();
 
     return new Response(null, { status: 101, webSocket: client });
@@ -193,7 +195,7 @@ export class Room {
     await lobby.fetch("https://lobby/update", {
       method: "POST",
       body: JSON.stringify({
-        id: meta.id, name: meta.name, count,
+        id: meta.id, name: meta.name, count, max: meta.max || MIN,
         status: closed || count === 0 ? "closed" : meta.status,
       }),
     });
@@ -214,7 +216,7 @@ export class Lobby {
     if (url.pathname === "/update") {
       const d = await req.json();
       if (d.status === "closed" || d.count === 0) delete rooms[d.id];
-      else rooms[d.id] = { id: d.id, name: d.name, count: d.count, status: d.status, updated: now };
+      else rooms[d.id] = { id: d.id, name: d.name, count: d.count, max: d.max || 6, status: d.status, updated: now };
       // 古い部屋を片付ける
       for (const k of Object.keys(rooms)) if (now - rooms[k].updated > 3 * 3600 * 1000) delete rooms[k];
       await this.state.storage.put("rooms", rooms);
@@ -226,7 +228,7 @@ export class Lobby {
         .filter((r) => now - r.updated < 3 * 3600 * 1000)
         .sort((a, b) => (a.status === b.status ? b.updated - a.updated : a.status === "waiting" ? -1 : 1))
         .slice(0, 30)
-        .map((r) => ({ id: r.id, name: r.name, count: r.count, status: r.status }));
+        .map((r) => ({ id: r.id, name: r.name, count: r.count, max: r.max || 6, status: r.status }));
       return json({ rooms: list });
     }
     return new Response("not found", { status: 404 });
