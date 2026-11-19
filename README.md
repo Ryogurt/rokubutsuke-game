@@ -4,6 +4,7 @@
 
 - 遊ぶ: https://rokubutsuke-game.pages.dev （Cloudflare Pages で自動公開）
 - キャラ確認（仮キャラの動き）: https://rokubutsuke-game.pages.dev/chara/
+- 学校グラウンド確認（コートを学校グラウンドにした版）: https://rokubutsuke-game.pages.dev/school/
 - 中身: Unity 6.3 で書き出した Web ビルド（`index.html` / `Build/` / `TemplateData/`）
 
 このリポジトリに push すると、Cloudflare Pages が自動で公開します。
